@@ -95,7 +95,7 @@ if uploaded_files:
         st.sidebar.success(f"✅ {len(uploaded_files)} archivo(s) cargado(s)")
 
 
-elif not uploaded_files:
+if not uploaded_files:
     st.info("👈 Subí al menos un extracto de Santander para empezar.")
 else:
     if not st.session_state.messages:
