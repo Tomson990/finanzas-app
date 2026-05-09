@@ -6,7 +6,7 @@ import io
 
 st.set_page_config(page_title="Mi Asesor Financiero", page_icon="💰", layout="centered")
 st.title("💰 Mi Asesor Financiero")
-st.caption("Subí tus extractos de Santander y chateá con tus datos.")
+st.caption("Subí tus extractos bancarios y chateá con tus datos.")
 
 with st.sidebar:
     st.header("Configuración")
