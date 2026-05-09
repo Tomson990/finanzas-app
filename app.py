@@ -10,7 +10,7 @@ st.caption("Subí tus extractos de Santander y chateá con tus datos.")
 
 with st.sidebar:
     st.header("Configuración")
-    api_key = st.text_input("API Key de Anthropic", type="password", help="console.anthropic.com")
+   api_key = st.secrets["ANTHROPIC_API_KEY"]
     st.markdown("---")
     st.header("Extractos")
     uploaded_files = st.file_uploader(
@@ -94,8 +94,7 @@ if uploaded_files:
             st.session_state.messages = []
         st.sidebar.success(f"✅ {len(uploaded_files)} archivo(s) cargado(s)")
 
-if not api_key:
-    st.info("👈 Ingresá tu API Key de Anthropic para empezar.")
+
 elif not uploaded_files:
     st.info("👈 Subí al menos un extracto de Santander para empezar.")
 else:
