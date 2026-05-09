@@ -10,7 +10,7 @@ st.caption("Subí tus extractos de Santander y chateá con tus datos.")
 
 with st.sidebar:
     st.header("Configuración")
-   api_key = st.secrets["ANTHROPIC_API_KEY"]
+    api_key = st.secrets["ANTHROPIC_API_KEY"]
     st.markdown("---")
     st.header("Extractos")
     uploaded_files = st.file_uploader(
