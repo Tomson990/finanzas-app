@@ -3,3 +3,4 @@ anthropic
 pdfplumber
 pandas
 openpyxl
+supabase
