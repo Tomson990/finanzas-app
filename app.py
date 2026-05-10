@@ -33,7 +33,7 @@ with st.sidebar:
     )
     st.markdown("---")
     if st.button("🗑️ Limpiar conversación"):
-        if usuario:
+       if usuario:
             get_supabase().table("conversaciones").delete().eq("usuario", usuario).execute()
         st.session_state.messages = []
         st.rerun()
