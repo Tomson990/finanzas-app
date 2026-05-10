@@ -2,6 +2,7 @@ import streamlit as st
 import anthropic
 import pdfplumber
 import pandas as pd
+import requests
 import io
 from supabase import create_client
 
@@ -20,10 +21,60 @@ def get_supabase():
 def get_anthropic():
     return anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
+# ── Datos IPC automáticos (ArgentinaDatos) ────────────────────────────────────
+@st.cache_data(ttl=86400)  # Cache 24 horas
+def fetch_ipc():
+    try:
+        r = requests.get(
+            "https://api.argentinadatos.com/v1/finanzas/indices/inflacion",
+            timeout=5
+        )
+        data = r.json()
+        # Trae lista de meses, tomamos el último
+        ultimo = data[-1]
+        penultimo = data[-2] if len(data) >= 2 else None
+
+        texto = f"""
+DATOS IPC INDEC — {ultimo.get('fecha', 'último disponible')}:
+- Inflación mensual: {ultimo.get('valor', '?')}%
+"""
+        if penultimo:
+            texto += f"- Mes anterior: {penultimo.get('valor', '?')}%\n"
+
+        # Acumulado año
+        año_actual = ultimo.get('fecha', '')[:4]
+        meses_año = [d for d in data if d.get('fecha', '').startswith(año_actual)]
+        if meses_año:
+            acumulado = 1
+            for m in meses_año:
+                acumulado *= (1 + float(m.get('valor', 0)) / 100)
+            acumulado = round((acumulado - 1) * 100, 1)
+            texto += f"- Acumulado {año_actual}: {acumulado}%\n"
+
+        texto += """
+Categorías IPC aproximadas (usar como referencia):
+- Alimentos y bebidas: similar a inflación general o levemente superior
+- Salud: generalmente por encima de la inflación general
+- Transporte: variable según tarifas
+- Vivienda y servicios: variable según regulaciones
+- Indumentaria: variable estacional
+"""
+        return texto, ultimo.get('fecha', ''), ultimo.get('valor', '?')
+
+    except Exception:
+        # Fallback con datos hardcodeados si la API falla
+        return """
+DATOS IPC INDEC (referencia — verificar en indec.gob.ar):
+- Inflación mensual general: ~3-4%
+- Acumulado 2026: ~6%
+""", "no disponible", "?"
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
+ipc_texto, ipc_fecha, ipc_valor = fetch_ipc()
+
 with st.sidebar:
     st.header("👤 Usuario")
-    usuario = st.text_input("Tu nombre (para recordar tu historial)", placeholder="ej: tomson")
+    usuario = st.text_input("Tu nombre", placeholder="ej: tomson")
     st.markdown("---")
     st.header("📄 Extractos")
     uploaded_files = st.file_uploader(
@@ -31,6 +82,8 @@ with st.sidebar:
         type=["pdf", "xlsx", "xls"],
         accept_multiple_files=True,
     )
+    st.markdown("---")
+    st.caption(f"📊 IPC: {ipc_fecha} — {ipc_valor}% mensual")
     st.markdown("---")
     if st.button("🗑️ Limpiar conversación"):
         if usuario:
@@ -91,13 +144,23 @@ Reglas generales:
 - Si algo no está en los datos, lo decís claramente
 - Detectás patrones y anomalías de forma proactiva
 
+Cuando analizás inflación personal:
+- Categorizás los gastos del extracto según las divisiones del IPC del INDEC
+- Comparás la variación de gastos del usuario contra la inflación oficial
+- Le decís si gastó más o menos que la inflación en cada rubro
+- Calculás si su sueldo le ganó o perdió contra la inflación general
+- Usás frases concretas: "tu gasto en alimentos subió X% vs inflación de Y%"
+- Si hay varios meses de extractos, calculás la variación real entre períodos
+
 Cuando te preguntan sobre inversiones:
-- Primero calculás el excedente real del usuario: ingresos menos todos los gastos fijos y variables
-- Evaluás la liquidez: si el usuario queda muy justo a fin de mes, priorizás instrumentos líquidos como FCI money market
-- Considerás el contexto argentino: inflación, brecha cambiaria, cobertura en dólares
-- Mencionás opciones concretas: FCI money market, plazo fijo UVA, CEDEARs, obligaciones negociables
-- Si el usuario ya tiene movimientos con brokers como Balanz, los integrás al análisis
+- Calculás el excedente real: ingresos menos gastos fijos y variables
+- Evaluás liquidez y perfil de riesgo
+- Considerás el contexto argentino: inflación, brecha cambiaria, dolarización
+- Mencionás opciones concretas: FCI money market, plazo fijo UVA, CEDEARs, ON
+- Si hay movimientos con Balanz u otros brokers, los integrás al análisis
 - Siempre aclarás que no sos asesor financiero regulado
+
+{ipc}
 
 EXTRACTOS BANCARIOS:
 {extracto}"""
@@ -128,12 +191,10 @@ if "files_key" not in st.session_state:
 if "usuario_cargado" not in st.session_state:
     st.session_state.usuario_cargado = ""
 
-# Cargar historial cuando cambia el usuario
 if usuario and usuario != st.session_state.usuario_cargado:
     st.session_state.messages = cargar_historial(usuario)
     st.session_state.usuario_cargado = usuario
 
-# Procesar archivos
 if uploaded_files:
     files_key = tuple(f.name for f in uploaded_files)
     if files_key != st.session_state.files_key:
@@ -153,11 +214,11 @@ else:
         cols = st.columns(2)
         suggestions = [
             "¿En qué gasté más plata?",
-            "¿Cuánto gané y cuánto gasté?",
-            "¿Cuánto gasto en comida y delivery?",
+            "¿Le gané o perdí a la inflación este mes?",
+            "¿Cuánto subieron mis gastos vs la inflación?",
             "¿Tengo margen para invertir algo?",
             "¿Qué gastos fijos tengo todos los meses?",
-            "¿En qué mes gasté más?",
+            "¿Mi sueldo le ganó a la inflación?",
         ]
         for i, sug in enumerate(suggestions):
             if cols[i % 2].button(sug, key=f"sug_{i}"):
@@ -169,14 +230,17 @@ else:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Preguntame sobre tus finanzas..."):
+    if prompt := st.chat_input("Preguntame sobre tus finanzas o la inflación..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         guardar_mensaje(usuario, "user", prompt)
         with st.chat_message("user"):
             st.markdown(prompt)
 
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-        system_prompt = SYSTEM.format(extracto=st.session_state.extracto_text)
+        system_prompt = SYSTEM.format(
+            ipc=ipc_texto,
+            extracto=st.session_state.extracto_text
+        )
         client = get_anthropic()
         with st.chat_message("assistant"):
             with st.spinner("Analizando..."):
