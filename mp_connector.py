@@ -20,14 +20,62 @@ HEADERS = {
 
 
 # ─────────────────────────────────────────────
+# CATEGORIZACIÓN DE COMERCIOS
+# ─────────────────────────────────────────────
+
+CATEGORIAS = {
+    "supermercado / almacén": [
+        "dia", "carrefour", "coto", "jumbo", "disco", "vea", "walmart",
+        "super", "almacen", "verduleria", "fruteria"
+    ],
+    "gastronomía": [
+        "restaurant", "resto", "cafe", "cafeteria", "bar", "pizzeria",
+        "sushi", "burger", "mcdonald", "mostaza", "wendy", "subway",
+        "gastronomia", "parrilla", "fish market", "moma", "pato"
+    ],
+    "salud / farmacia": [
+        "farmacia", "farma", "drogueria", "clinica", "medico", "laboratorio",
+        "arce", "sanatorio", "hospital", "dental", "optica"
+    ],
+    "servicios / facturas": [
+        "edenor", "edesur", "metrogas", "aysa", "iplan", "fibertel",
+        "claro", "personal", "movistar", "telecom", "directv", "flow",
+        "osde", "swiss medical", "galeno", "seguro", "expensas"
+    ],
+    "transporte": [
+        "uber", "cabify", "taxi", "remis", "sube", "peaje", "nafta",
+        "ypf", "shell", "axion", "estacion", "tren", "subte", "colectivo"
+    ],
+    "indumentaria": [
+        "zara", "h&m", "adidas", "nike", "rapsodia", "legacy", "ropa",
+        "calzado", "zapatilla", "zapateria", "indumentaria"
+    ],
+    "entretenimiento / cultura": [
+        "netflix", "spotify", "hbo", "disney", "amazon", "cine", "teatro",
+        "libro", "dostoievski", "libreria", "fnac", "steam", "playstation"
+    ],
+    "banco / finanzas": [
+        "debin", "transferencia", "extraccion", "cajero", "banco",
+        "caja de seguridad", "caja ahorro", "plazo fijo", "inversion"
+    ],
+    "otros": []
+}
+
+
+def categorizar(descripcion: str) -> str:
+    """Asigna una categoría a una transacción según su descripción."""
+    desc = str(descripcion).lower()
+    for categoria, keywords in CATEGORIAS.items():
+        if any(kw in desc for kw in keywords):
+            return categoria
+    return "otros"
+
+
+# ─────────────────────────────────────────────
 # 1. PAGOS (compras con QR, débito, online)
 # ─────────────────────────────────────────────
 
-def get_payments(days_back: int = 90) -> pd.DataFrame:
-    """
-    Trae los pagos realizados desde tu cuenta en los últimos N días.
-    Endpoint: GET /v1/payments/search
-    """
+def get_payments(days_back: int = 30) -> pd.DataFrame:
     date_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000-03:00")
     date_to = datetime.now().strftime("%Y-%m-%dT23:59:59.000-03:00")
 
@@ -53,7 +101,6 @@ def get_payments(days_back: int = 90) -> pd.DataFrame:
 
         all_payments.extend(results)
 
-        # Paginación
         paging = data.get("paging", {})
         total = paging.get("total", 0)
         offset = paging.get("offset", 0) + paging.get("limit", 100)
@@ -74,24 +121,19 @@ def get_payments(days_back: int = 90) -> pd.DataFrame:
         "tipo": p.get("payment_type_id"),
         "metodo": p.get("payment_method_id"),
         "cuotas": p.get("installments", 1),
-        "comercio": p.get("merchant_account_id"),
         "fuente": "payment"
     } for p in all_payments])
 
-    # Solo pagos aprobados y salientes
     df = df[df["estado"] == "approved"].copy()
+    df["categoria"] = df["descripcion"].apply(categorizar)
     return df.sort_values("fecha", ascending=False).reset_index(drop=True)
 
 
 # ─────────────────────────────────────────────
-# 2. MOVIMIENTOS DE CUENTA (transferencias, recargas, extracciones)
+# 2. MOVIMIENTOS DE CUENTA
 # ─────────────────────────────────────────────
 
-def get_account_movements(days_back: int = 90) -> pd.DataFrame:
-    """
-    Trae los movimientos de la cuenta MP (transferencias, recargas, etc).
-    Endpoint: GET /v1/account/movements/search
-    """
+def get_account_movements(days_back: int = 30) -> pd.DataFrame:
     date_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000-03:00")
     date_to = datetime.now().strftime("%Y-%m-%dT23:59:59.000-03:00")
 
@@ -107,7 +149,6 @@ def get_account_movements(days_back: int = 90) -> pd.DataFrame:
     while True:
         response = requests.get(f"{BASE_URL}/v1/account/movements/search", headers=HEADERS, params=params)
         if response.status_code == 404:
-            # Endpoint no disponible para esta cuenta
             break
         response.raise_for_status()
         data = response.json()
@@ -139,6 +180,7 @@ def get_account_movements(days_back: int = 90) -> pd.DataFrame:
         "fuente": "movement"
     } for m in all_movements])
 
+    df["categoria"] = df["descripcion"].apply(categorizar)
     return df.sort_values("fecha", ascending=False).reset_index(drop=True)
 
 
@@ -146,11 +188,7 @@ def get_account_movements(days_back: int = 90) -> pd.DataFrame:
 # 3. FUNCIÓN PRINCIPAL: combinar todo
 # ─────────────────────────────────────────────
 
-def get_all_transactions(days_back: int = 90) -> pd.DataFrame:
-    """
-    Combina pagos y movimientos en un único DataFrame normalizado.
-    Es la función que llama app.py.
-    """
+def get_all_transactions(days_back: int = 30) -> pd.DataFrame:
     payments = get_payments(days_back)
     movements = get_account_movements(days_back)
 
@@ -164,60 +202,89 @@ def get_all_transactions(days_back: int = 90) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────
-# 4. RESUMEN PARA INYECTAR AL CHAT
+# 4. RESUMEN CATEGORIZADO PARA EL CHAT
 # ─────────────────────────────────────────────
-def build_mp_context(days_back: int = 90) -> str:
-    """
-    Genera un texto-resumen de los movimientos de MP para inyectar
-    como contexto al sistema prompt de Claude (igual que los PDFs).
-    """
+
+def build_mp_context(days_back: int = 30) -> str:
     df = get_all_transactions(days_back)
 
     if df.empty:
         return "No se encontraron movimientos de Mercado Pago para el período solicitado."
 
-    pagos = df[df["tipo"].isin(["regular_payment", "bank_transfer"])] if "tipo" in df.columns else df
-    total_gastos = pagos["monto"].sum() if "monto" in df.columns else 0
-    total_ingresos = df[~df["tipo"].isin(["regular_payment", "bank_transfer"])]["monto"].sum() if "tipo" in df.columns else 0
+    tipos_gasto = ["regular_payment", "bank_transfer"]
+    pagos = df[df["tipo"].isin(tipos_gasto)] if "tipo" in df.columns else df
+    ingresos_df = df[~df["tipo"].isin(tipos_gasto)] if "tipo" in df.columns else pd.DataFrame()
+
+    total_gastos = pagos["monto"].sum() if not pagos.empty else 0
+    total_ingresos = ingresos_df["monto"].sum() if not ingresos_df.empty else 0
     cant_transacciones = len(df)
 
-    # Top descripciones
-    top_desc = (
-        pagos.groupby("descripcion")["monto"]
-        .sum()
-        .sort_values(ascending=False)
-        .head(10)
-        .to_string()
-    )
+    # Resumen por categoría
+    if not pagos.empty and "categoria" in pagos.columns:
+        por_categoria = (
+            pagos.groupby("categoria")["monto"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+        cat_texto = "\n".join([
+            f"  - {cat}: ARS {monto:,.0f}"
+            for cat, monto in por_categoria.items()
+        ])
+    else:
+        cat_texto = "  Sin datos de categorías"
 
-    # Resumen por mes
+    # Top 10 comercios
+    if not pagos.empty:
+        top_comercios = (
+            pagos.groupby("descripcion")["monto"]
+            .sum()
+            .sort_values(ascending=False)
+            .head(10)
+        )
+        comercios_texto = "\n".join([
+            f"  - {desc}: ARS {monto:,.0f}"
+            for desc, monto in top_comercios.items()
+        ])
+    else:
+        comercios_texto = "  Sin datos"
+
+    # Evolución mensual
     df["mes"] = df["fecha"].dt.to_period("M").astype(str)
-    monthly = df.groupby("mes")["monto"].sum().to_string()
+    monthly = df.groupby("mes")["monto"].sum()
+    monthly_texto = "\n".join([f"  - {mes}: ARS {monto:,.0f}" for mes, monto in monthly.items()])
+
+    # Últimas 20 transacciones
+    cols_show = [c for c in ["fecha", "descripcion", "monto", "categoria"] if c in df.columns]
+    ultimas = df[cols_show].head(20).to_string(index=False)
 
     context = f"""
 === DATOS DE MERCADO PAGO (últimos {days_back} días) ===
 
 Período: {df['fecha'].min().strftime('%d/%m/%Y')} al {df['fecha'].max().strftime('%d/%m/%Y')}
 Total transacciones: {cant_transacciones}
-Total gastos: ARS {abs(total_gastos):,.2f}
-Total ingresos: ARS {total_ingresos:,.2f}
-Balance neto: ARS {(total_ingresos - total_gastos):,.2f}
+Total gastos: ARS {total_gastos:,.0f}
+Total ingresos/acreditaciones: ARS {total_ingresos:,.0f}
+Balance neto: ARS {(total_ingresos - total_gastos):,.0f}
 
---- Top 10 gastos por descripción ---
-{top_desc}
+--- Gastos por categoría ---
+{cat_texto}
 
---- Evolución mensual (suma neta) ---
-{monthly}
+--- Top 10 comercios / descripciones ---
+{comercios_texto}
+
+--- Evolución mensual ---
+{monthly_texto}
 
 --- Últimas 20 transacciones ---
-{df[['fecha','descripcion','monto','tipo']].head(20).to_string(index=False)}
+{ultimas}
 """
     return context
 
 
 # ─────────────────────────────────────────────
-# TEST RÁPIDO (correr directamente: python mp_connector.py)
+# TEST RÁPIDO
 # ─────────────────────────────────────────────
+
 if __name__ == "__main__":
     print("Conectando con Mercado Pago...")
     context = build_mp_context(days_back=30)
