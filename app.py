@@ -5,10 +5,11 @@ import pandas as pd
 import requests
 import io
 from supabase import create_client
+from mp_connector import build_mp_context, get_all_transactions
 
 st.set_page_config(page_title="Mi Asesor Financiero", page_icon="💰", layout="centered")
 st.title("💰 Mi Asesor Financiero")
-st.caption("Subí tus extractos bancarios y chateá con tus datos.")
+st.caption("Subí tus extractos bancarios o conectá Mercado Pago para chatear con tus datos.")
 
 # ── Clientes ──────────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -22,7 +23,7 @@ def get_anthropic():
     return anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
 # ── Datos IPC automáticos (ArgentinaDatos) ────────────────────────────────────
-@st.cache_data(ttl=86400)  # Cache 24 horas
+@st.cache_data(ttl=86400)
 def fetch_ipc():
     try:
         r = requests.get(
@@ -30,7 +31,6 @@ def fetch_ipc():
             timeout=5
         )
         data = r.json()
-        # Trae lista de meses, tomamos el último
         ultimo = data[-1]
         penultimo = data[-2] if len(data) >= 2 else None
 
@@ -41,7 +41,6 @@ DATOS IPC INDEC — {ultimo.get('fecha', 'último disponible')}:
         if penultimo:
             texto += f"- Mes anterior: {penultimo.get('valor', '?')}%\n"
 
-        # Acumulado año
         año_actual = ultimo.get('fecha', '')[:4]
         meses_año = [d for d in data if d.get('fecha', '').startswith(año_actual)]
         if meses_año:
@@ -62,7 +61,6 @@ Categorías IPC aproximadas (usar como referencia):
         return texto, ultimo.get('fecha', ''), ultimo.get('valor', '?')
 
     except Exception:
-        # Fallback con datos hardcodeados si la API falla
         return """
 DATOS IPC INDEC (referencia — verificar en indec.gob.ar):
 - Inflación mensual general: ~3-4%
@@ -75,13 +73,39 @@ ipc_texto, ipc_fecha, ipc_valor = fetch_ipc()
 with st.sidebar:
     st.header("👤 Usuario")
     usuario = st.text_input("Tu nombre", placeholder="ej: tomson")
+
     st.markdown("---")
-    st.header("📄 Extractos")
+    st.header("📄 Extractos bancarios")
     uploaded_files = st.file_uploader(
         "Subí PDFs o Excel de tu banco",
         type=["pdf", "xlsx", "xls"],
         accept_multiple_files=True,
     )
+
+    st.markdown("---")
+    st.header("🟡 Mercado Pago")
+    mp_days = st.slider("Días de historial", min_value=7, max_value=90, value=30, step=7)
+    mp_conectar = st.button("Conectar Mercado Pago")
+
+    if mp_conectar:
+        with st.spinner("Trayendo movimientos de MP..."):
+            try:
+                mp_ctx = build_mp_context(days_back=mp_days)
+                mp_df = get_all_transactions(days_back=mp_days)
+                st.session_state["mp_context"] = mp_ctx
+                st.session_state["mp_df"] = mp_df
+                st.success("✅ Datos de MP cargados")
+            except Exception as e:
+                st.error(f"Error al conectar: {e}")
+
+    if st.session_state.get("mp_df") is not None and not st.session_state["mp_df"].empty:
+        df_mp = st.session_state["mp_df"]
+        gastos = df_mp[df_mp["monto"] < 0]["monto"].sum()
+        ingresos = df_mp[df_mp["monto"] > 0]["monto"].sum()
+        st.metric("Gastos MP", f"$ {abs(gastos):,.0f}")
+        st.metric("Ingresos MP", f"$ {ingresos:,.0f}")
+        st.metric("Transacciones", len(df_mp))
+
     st.markdown("---")
     st.caption(f"📊 IPC: {ipc_fecha} — {ipc_valor}% mensual")
     st.markdown("---")
@@ -89,6 +113,8 @@ with st.sidebar:
         if usuario:
             get_supabase().table("conversaciones").delete().eq("usuario", usuario).execute()
         st.session_state.messages = []
+        st.session_state.pop("mp_context", None)
+        st.session_state.pop("mp_df", None)
         st.rerun()
 
 # ── Extracción ────────────────────────────────────────────────────────────────
@@ -134,7 +160,7 @@ def extract_all(files):
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM = """Sos un asesor financiero personal en español rioplatense.
-Analizás extractos bancarios argentinos y respondés preguntas sobre gastos, ingresos, transferencias, inversiones y patrones de consumo.
+Analizás extractos bancarios argentinos y datos de Mercado Pago, y respondés preguntas sobre gastos, ingresos, transferencias, inversiones y patrones de consumo.
 
 Reglas generales:
 - Respondés siempre en español argentino
@@ -143,6 +169,7 @@ Reglas generales:
 - Incluís transferencias, préstamos y retiros de efectivo en el análisis, no solo compras
 - Si algo no está en los datos, lo decís claramente
 - Detectás patrones y anomalías de forma proactiva
+- Si hay datos de Mercado Pago Y de extracto bancario, los integrás en el análisis
 
 Cuando analizás inflación personal:
 - Categorizás los gastos del extracto según las divisiones del IPC del INDEC
@@ -162,8 +189,9 @@ Cuando te preguntan sobre inversiones:
 
 {ipc}
 
-EXTRACTOS BANCARIOS:
-{extracto}"""
+{extracto_section}
+
+{mp_section}"""
 
 # ── Memoria con Supabase ──────────────────────────────────────────────────────
 def cargar_historial(usuario):
@@ -203,12 +231,25 @@ if uploaded_files:
             st.session_state.files_key = files_key
         st.sidebar.success(f"✅ {len(uploaded_files)} archivo(s) cargado(s)")
 
+# ── Determinar si hay datos para chatear ─────────────────────────────────────
+tiene_extracto = bool(uploaded_files)
+tiene_mp = st.session_state.get("mp_context") is not None
+
 # ── Chat ──────────────────────────────────────────────────────────────────────
 if not usuario:
     st.info("👈 Ingresá tu nombre en el panel lateral para empezar.")
-elif not uploaded_files:
-    st.info("👈 Subí al menos un extracto bancario para empezar.")
+elif not tiene_extracto and not tiene_mp:
+    st.info("👈 Subí un extracto bancario o conectá Mercado Pago para empezar.")
 else:
+    # Badges de fuentes activas
+    fuentes = []
+    if tiene_extracto:
+        fuentes.append(f"📄 {len(uploaded_files)} extracto(s)")
+    if tiene_mp:
+        n = len(st.session_state.get("mp_df", []))
+        fuentes.append(f"🟡 MP ({n} mov.)")
+    st.caption("Fuentes activas: " + " · ".join(fuentes))
+
     if not st.session_state.messages:
         st.markdown("**Preguntas para arrancar:**")
         cols = st.columns(2)
@@ -237,10 +278,20 @@ else:
             st.markdown(prompt)
 
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+
+        extracto_section = (
+            f"EXTRACTOS BANCARIOS:\n{st.session_state.extracto_text}"
+            if st.session_state.extracto_text
+            else ""
+        )
+        mp_section = st.session_state.get("mp_context", "")
+
         system_prompt = SYSTEM.format(
             ipc=ipc_texto,
-            extracto=st.session_state.extracto_text
+            extracto_section=extracto_section,
+            mp_section=mp_section
         )
+
         client = get_anthropic()
         with st.chat_message("assistant"):
             with st.spinner("Analizando..."):
