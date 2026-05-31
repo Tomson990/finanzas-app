@@ -8,11 +8,9 @@ import os
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
-load_dotenv()
 
-MP_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+MP_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
 BASE_URL = "https://api.mercadopago.com"
 
 HEADERS = {
