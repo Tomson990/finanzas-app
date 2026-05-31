@@ -67,6 +67,22 @@ DATOS IPC INDEC (referencia — verificar en indec.gob.ar):
 - Acumulado 2026: ~6%
 """, "no disponible", "?"
 
+# ── Auto-carga de Mercado Pago al iniciar ─────────────────────────────────────
+def cargar_mp_automatico():
+    """Carga datos de MP automáticamente si hay token y no hay datos en sesión."""
+    if st.session_state.get("mp_context") is not None:
+        return  # Ya cargado
+    token = st.secrets.get("MERCADOPAGO_ACCESS_TOKEN") or ""
+    if not token:
+        return  # Sin token configurado
+    try:
+        mp_ctx = build_mp_context(days_back=30)
+        mp_df = get_all_transactions(days_back=30)
+        st.session_state["mp_context"] = mp_ctx
+        st.session_state["mp_df"] = mp_df
+    except Exception:
+        pass  # Falla silenciosa — el usuario puede conectar manualmente
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 ipc_texto, ipc_fecha, ipc_valor = fetch_ipc()
 
@@ -85,7 +101,10 @@ with st.sidebar:
     st.markdown("---")
     st.header("🟡 Mercado Pago")
     mp_days = st.slider("Días de historial", min_value=7, max_value=90, value=30, step=7)
-    mp_conectar = st.button("Conectar Mercado Pago")
+
+    col1, col2 = st.columns(2)
+    mp_conectar = col1.button("Actualizar")
+    mp_limpiar = col2.button("Desconectar")
 
     if mp_conectar:
         with st.spinner("Trayendo movimientos de MP..."):
@@ -94,17 +113,24 @@ with st.sidebar:
                 mp_df = get_all_transactions(days_back=mp_days)
                 st.session_state["mp_context"] = mp_ctx
                 st.session_state["mp_df"] = mp_df
-                st.success("✅ Datos de MP cargados")
+                st.success("✅ Datos actualizados")
             except Exception as e:
                 st.error(f"Error al conectar: {e}")
 
+    if mp_limpiar:
+        st.session_state.pop("mp_context", None)
+        st.session_state.pop("mp_df", None)
+        st.rerun()
+
     if st.session_state.get("mp_df") is not None and not st.session_state["mp_df"].empty:
         df_mp = st.session_state["mp_df"]
-        gastos = df_mp[df_mp["monto"] < 0]["monto"].sum()
-        ingresos = df_mp[df_mp["monto"] > 0]["monto"].sum()
-        st.metric("Gastos MP", f"$ {abs(gastos):,.0f}")
-        st.metric("Ingresos MP", f"$ {ingresos:,.0f}")
+        tipos_gasto = ["regular_payment", "bank_transfer"]
+        gastos = df_mp[df_mp["tipo"].isin(tipos_gasto)]["monto"].sum() if "tipo" in df_mp.columns else 0
+        st.metric("Gastos MP (30d)", f"$ {gastos:,.0f}")
         st.metric("Transacciones", len(df_mp))
+        st.caption("🟢 Conectado — datos al día")
+    else:
+        st.caption("⚪ Sin datos de MP")
 
     st.markdown("---")
     st.caption(f"📊 IPC: {ipc_fecha} — {ipc_valor}% mensual")
@@ -170,6 +196,7 @@ Reglas generales:
 - Si algo no está en los datos, lo decís claramente
 - Detectás patrones y anomalías de forma proactiva
 - Si hay datos de Mercado Pago Y de extracto bancario, los integrás en el análisis
+- Cuando uses datos de MP, aprovechá las categorías pre-calculadas para dar análisis más precisos
 
 Cuando analizás inflación personal:
 - Categorizás los gastos del extracto según las divisiones del IPC del INDEC
@@ -219,6 +246,9 @@ if "files_key" not in st.session_state:
 if "usuario_cargado" not in st.session_state:
     st.session_state.usuario_cargado = ""
 
+# Auto-carga MP al iniciar
+cargar_mp_automatico()
+
 if usuario and usuario != st.session_state.usuario_cargado:
     st.session_state.messages = cargar_historial(usuario)
     st.session_state.usuario_cargado = usuario
@@ -239,14 +269,14 @@ tiene_mp = st.session_state.get("mp_context") is not None
 if not usuario:
     st.info("👈 Ingresá tu nombre en el panel lateral para empezar.")
 elif not tiene_extracto and not tiene_mp:
-    st.info("👈 Subí un extracto bancario o conectá Mercado Pago para empezar.")
+    st.info("👈 Subí un extracto bancario o esperá que carguen los datos de Mercado Pago.")
 else:
     # Badges de fuentes activas
     fuentes = []
     if tiene_extracto:
         fuentes.append(f"📄 {len(uploaded_files)} extracto(s)")
     if tiene_mp:
-        n = len(st.session_state.get("mp_df", []))
+        n = len(st.session_state.get("mp_df", pd.DataFrame()))
         fuentes.append(f"🟡 MP ({n} mov.)")
     st.caption("Fuentes activas: " + " · ".join(fuentes))
 
@@ -256,10 +286,10 @@ else:
         suggestions = [
             "¿En qué gasté más plata?",
             "¿Le gané o perdí a la inflación este mes?",
-            "¿Cuánto subieron mis gastos vs la inflación?",
+            "¿Cuánto gasté por categoría?",
             "¿Tengo margen para invertir algo?",
             "¿Qué gastos fijos tengo todos los meses?",
-            "¿Mi sueldo le ganó a la inflación?",
+            "¿Dónde puedo recortar gastos?",
         ]
         for i, sug in enumerate(suggestions):
             if cols[i % 2].button(sug, key=f"sug_{i}"):
